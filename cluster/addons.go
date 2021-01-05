@@ -24,6 +24,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -36,7 +37,6 @@ const (
 	UserAddonJobName               = "rke-user-addon-deploy-job"
 	UserAddonIncludeJobName        = "rke-user-includes-addons-deploy-job"
 	MetricsServerAddonResourceName = "rke-metrics-addon"
-	NginxIngressAddonAppName       = "ingress-nginx"
 	KubeDNSAddonAppName            = "kube-dns"
 	KubeDNSAutoscalerAppName       = "kube-dns-autoscaler"
 	CoreDNSAutoscalerAppName       = "coredns-autoscaler"
@@ -46,6 +46,10 @@ const (
 	CoreDNSProvider = "coredns"
 	KubeDNSProvider = "kube-dns"
 	Nodelocal       = "nodelocal"
+
+	NginxIngressAddonAppName                 = "ingress-nginx"
+	NginxIngressAddonDefaultBackendName      = "default-http-backend"
+	NginxIngressAddonDefaultBackendNamespace = "ingress-nginx"
 )
 
 var DNSProviders = []string{KubeDNSProvider, CoreDNSProvider}
@@ -65,7 +69,9 @@ type ingressOptions struct {
 	HTTPPort          int
 	HTTPSPort         int
 	NetworkMode       string
+	DefaultBackend    bool
 	UpdateStrategy    *appsv1.DaemonSetUpdateStrategy
+	Tolerations       []v1.Toleration
 }
 
 type MetricsServerOptions struct {
@@ -76,6 +82,7 @@ type MetricsServerOptions struct {
 	Version            string
 	UpdateStrategy     *appsv1.DeploymentStrategy
 	Replicas           *int32
+	Tolerations        []v1.Toleration
 }
 
 type CoreDNSOptions struct {
@@ -89,6 +96,7 @@ type CoreDNSOptions struct {
 	NodeSelector           map[string]string
 	UpdateStrategy         *appsv1.DeploymentStrategy
 	LinearAutoscalerParams string
+	Tolerations            []v1.Toleration
 }
 
 type KubeDNSOptions struct {
@@ -105,6 +113,7 @@ type KubeDNSOptions struct {
 	NodeSelector           map[string]string
 	UpdateStrategy         *appsv1.DeploymentStrategy
 	LinearAutoscalerParams string
+	Tolerations            []v1.Toleration
 }
 
 type NodelocalOptions struct {
@@ -322,6 +331,7 @@ func (c *Cluster) deployKubeDNS(ctx context.Context, data map[string]interface{}
 			Type:          c.DNS.UpdateStrategy.Strategy,
 			RollingUpdate: c.DNS.UpdateStrategy.RollingUpdate,
 		},
+		Tolerations: c.DNS.Tolerations,
 	}
 	linearModeBytes, err := json.Marshal(c.DNS.LinearAutoscalerParams)
 	if err != nil {
@@ -358,6 +368,7 @@ func (c *Cluster) deployCoreDNS(ctx context.Context, data map[string]interface{}
 			Type:          c.DNS.UpdateStrategy.Strategy,
 			RollingUpdate: c.DNS.UpdateStrategy.RollingUpdate,
 		},
+		Tolerations: c.DNS.Tolerations,
 	}
 	linearModeBytes, err := json.Marshal(c.DNS.LinearAutoscalerParams)
 	if err != nil {
@@ -411,7 +422,8 @@ func (c *Cluster) deployMetricServer(ctx context.Context, data map[string]interf
 			Type:          c.Monitoring.UpdateStrategy.Strategy,
 			RollingUpdate: c.Monitoring.UpdateStrategy.RollingUpdate,
 		},
-		Replicas: c.Monitoring.Replicas,
+		Replicas:    c.Monitoring.Replicas,
+		Tolerations: c.Monitoring.Tolerations,
 	}
 	tmplt, err := templates.GetVersionedTemplates(kdm.MetricsServer, data, c.Version)
 	if err != nil {
@@ -549,7 +561,6 @@ func (c *Cluster) deployIngress(ctx context.Context, data map[string]interface{}
 			if err := c.doAddonDelete(ctx, IngressAddonResourceName, false); err != nil {
 				return err
 			}
-
 			log.Infof(ctx, "[ingress] ingress controller removed successfully")
 		} else {
 			log.Infof(ctx, "[ingress] ingress controller is disabled, skipping ingress controller")
@@ -571,10 +582,12 @@ func (c *Cluster) deployIngress(ctx context.Context, data map[string]interface{}
 		HTTPPort:          c.Ingress.HTTPPort,
 		HTTPSPort:         c.Ingress.HTTPSPort,
 		NetworkMode:       c.Ingress.NetworkMode,
+		DefaultBackend:    *c.Ingress.DefaultBackend,
 		UpdateStrategy: &appsv1.DaemonSetUpdateStrategy{
 			Type:          c.Ingress.UpdateStrategy.Strategy,
 			RollingUpdate: c.Ingress.UpdateStrategy.RollingUpdate,
 		},
+		Tolerations: c.Ingress.Tolerations,
 	}
 	// since nginx ingress controller 0.16.0, it can be run as non-root and doesn't require privileged anymore.
 	// So we can use securityContext instead of setting privileges via initContainer.
@@ -603,9 +616,26 @@ func (c *Cluster) deployIngress(ctx context.Context, data map[string]interface{}
 			return fmt.Errorf("Failed to apply default PodSecurityPolicy ClusterRole and ClusterRoleBinding: %v", err)
 		}
 	}
+
+	// After deployment of the new ingress controller based on the update strategy, remove the default backend as requested.
+	if !ingressConfig.DefaultBackend {
+		log.Infof(ctx, "[ingress] removing default backend service and deployment if they exist")
+		kubeClient, err := k8s.NewClient(c.LocalKubeConfigPath, c.K8sWrapTransport)
+		if err != nil {
+			return err
+		}
+		if err = k8s.DeleteServiceIfExists(ctx, kubeClient, NginxIngressAddonDefaultBackendName, NginxIngressAddonDefaultBackendNamespace); err != nil {
+			return err
+		}
+		if err = k8s.DeleteDeploymentIfExists(ctx, kubeClient, NginxIngressAddonDefaultBackendName, NginxIngressAddonDefaultBackendNamespace); err != nil {
+			return err
+		}
+	}
+
 	log.Infof(ctx, "[ingress] ingress controller %s deployed successfully", c.Ingress.Provider)
 	return nil
 }
+
 func (c *Cluster) removeDNSProvider(ctx context.Context, dnsprovider string) error {
 	AddonJobExists, err := addons.AddonJobExists(getAddonResourceName(dnsprovider)+"-deploy-job", c.LocalKubeConfigPath, c.K8sWrapTransport)
 	if err != nil {
