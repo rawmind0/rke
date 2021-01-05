@@ -671,11 +671,11 @@ type GlobalVsphereOpts struct {
 }
 
 type VirtualCenterConfig struct {
-	User              string `json:"user,omitempty" yaml:"user,omitempty" ini:"user,omitempty"`
-	Password          string `json:"password,omitempty" yaml:"password,omitempty" ini:"password,omitempty" norman:"type=password"`
-	VCenterPort       string `json:"port,omitempty" yaml:"port,omitempty" ini:"port,omitempty"`
-	Datacenters       string `json:"datacenters,omitempty" yaml:"datacenters,omitempty" ini:"datacenters,omitempty"`
-	RoundTripperCount int    `json:"soap-roundtrip-count,omitempty" yaml:"soap-roundtrip-count,omitempty" ini:"soap-roundtrip-count,omitempty"`
+	User              string `json:"user" yaml:"user" ini:"user"`
+	Password          string `json:"password" yaml:"password" ini:"password" norman:"type=password"`
+	VCenterPort       string `json:"port" yaml:"port" ini:"port"`
+	Datacenters       string `json:"datacenters" yaml:"datacenters" ini:"datacenters"`
+	RoundTripperCount int    `json:"soap-roundtrip-count" yaml:"soap-roundtrip-count" ini:"soap-roundtrip-count"`
 }
 
 type NetworkVshpereOpts struct {
